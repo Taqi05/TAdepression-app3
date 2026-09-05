@@ -1,9 +1,16 @@
 """
-Deteksi Risiko Depresi Mahasiswa — Streamlit App
-==================================================
-Pipeline preprocessing di file ini HARUS sama persis dengan yang dipakai
-di notebook (TA_GridSearchCV_7MODEL.ipynb), supaya prediksi & LIME
-konsisten dengan yang dilaporkan di Tugas Akhir.
+Deteksi Risiko Depresi Mahasiswa — Streamlit App (versi disederhanakan)
+========================================================================
+Versi ini HANYA menampilkan input yang benar-benar dipakai oleh model
+(10 fitur hasil feature selection -> berasal dari 9 kolom mentah).
+
+Kolom mentah yang TIDAK memengaruhi prediksi (Gender, City, Degree Level,
+CGPA, Work Pressure, Job Satisfaction, Family History of Mental Illness)
+tetap diisi otomatis dengan nilai default di belakang layar, semata-mata
+supaya scaler.transform() / ohe.transform() tidak error (keduanya di-fit
+pada notebook dengan seluruh kolom mentah, sebelum feature selection).
+Nilai default itu TIDAK berpengaruh ke hasil prediksi karena akan dibuang
+saat kita ambil hanya `selected_features` di akhir preprocessing.
 
 File pendukung yang WAJIB ada di folder yang sama (hasil dari notebook):
 - best_model.pkl          -> model terbaik (hasil GridSearchCV)
@@ -22,23 +29,7 @@ import lime.lime_tabular
 
 st.set_page_config(page_title="Deteksi Risiko Depresi Mahasiswa", page_icon="🧠", layout="centered")
 
-# ── Mapping domain knowledge (HARUS sama persis dengan notebook) ─────────────
-TIER_1 = ['Delhi', 'Mumbai', 'Bangalore', 'Chennai', 'Kolkata', 'Hyderabad']
-TIER_2 = ['Pune', 'Ahmedabad', 'Jaipur', 'Lucknow', 'Surat', 'Bhopal', 'Indore', 'Nagpur', 'Patna']
-TIER_3 = ['Agra', 'Faridabad', 'Ghaziabad', 'Kalyan', 'Kanpur', 'Ludhiana',
-          'Meerut', 'Nashik', 'Rajkot', 'Srinagar', 'Thane', 'Vadodara',
-          'Varanasi', 'Vasai-Virar', 'Visakhapatnam']
-ALL_CITIES = TIER_1 + TIER_2 + TIER_3
-
-def map_city_tier(city: str) -> str:
-    if city in TIER_1:
-        return 'Tier 1'
-    elif city in TIER_2:
-        return 'Tier 2'
-    elif city in TIER_3:
-        return 'Tier 3'
-    return 'Other'
-
+# ── Kolom yang dibutuhkan scaler & ohe (HARUS sama persis dengan notebook) ───
 OHE_COLS = [
     'Gender',
     'City_Tier',
@@ -56,6 +47,18 @@ NUM_COLS_SCALE = [
 ]
 
 DEGREE_LEVELS = ['High School', 'Bachelor', 'Master', 'Doctorate', 'Other']
+
+# Nilai default untuk kolom yang TIDAK dipakai model (tidak ada di selected_features).
+# Boleh diganti bebas, tidak akan mengubah hasil prediksi.
+DEFAULTS_UNUSED = {
+    'Gender': 'Male',
+    'City_Tier': 'Tier 1',   # hasil map dari City, di sini langsung set tier-nya
+    'Degree_Level': 'Bachelor',
+    'CGPA': 7.5,
+    'Work Pressure': 0,
+    'Job Satisfaction': 0,
+    'Family History of Mental Illness': 'No',
+}
 
 
 # ── Load model & artefak (di-cache biar cuma load sekali) ────────────────────
@@ -96,14 +99,10 @@ def predict_fn(x):
 def preprocess_input(raw: dict) -> pd.DataFrame:
     df = pd.DataFrame([raw])
 
-    # 1. Feature engineering City -> City_Tier
-    df['City_Tier'] = df['City'].apply(map_city_tier)
-    df = df.drop(columns=['City'])
-
-    # 2. Ordinal encode Degree_Level
+    # 1. Ordinal encode Degree_Level
     df['Degree_Level'] = ordinal_encoder.transform(df[['Degree_Level']])
 
-    # 3. One-hot encode kolom kategorikal
+    # 2. One-hot encode kolom kategorikal
     ohe_out = ohe.transform(df[OHE_COLS])
     ohe_feature_names = ohe.get_feature_names_out(OHE_COLS).tolist()
     ohe_df = pd.DataFrame(ohe_out, columns=ohe_feature_names, index=df.index)
@@ -111,11 +110,11 @@ def preprocess_input(raw: dict) -> pd.DataFrame:
     df_num = df.drop(columns=OHE_COLS)
     df_full = pd.concat([df_num, ohe_df], axis=1)
 
-    # 4. Scaling fitur numerik (termasuk Degree_Level yang udah ordinal)
+    # 3. Scaling fitur numerik (termasuk Degree_Level yang udah ordinal)
     cols_to_scale = [c for c in NUM_COLS_SCALE if c in df_full.columns]
     df_full[cols_to_scale] = scaler.transform(df_full[cols_to_scale])
 
-    # 5. Ambil hanya 10 fitur hasil feature selection, urutan HARUS sama
+    # 4. Ambil hanya 10 fitur hasil feature selection, urutan HARUS sama
     df_selected = df_full[selected_features]
     return df_selected
 
@@ -123,53 +122,43 @@ def preprocess_input(raw: dict) -> pd.DataFrame:
 # ── UI ─────────────────────────────────────────────────────────────────────
 st.title("🧠 Deteksi Risiko Depresi Mahasiswa")
 st.caption("Model machine learning hasil Tugas Akhir — GridSearchCV + SMOTE + Feature Selection + LIME")
+st.info("Form ini hanya menanyakan 9 input yang benar-benar dipakai oleh model (hasil feature selection).")
 
 with st.form("input_form"):
     col1, col2 = st.columns(2)
 
     with col1:
-        gender = st.selectbox("Gender", ["Male", "Female"])
         age = st.number_input("Age", min_value=15, max_value=60, value=21)
-        city = st.selectbox("City", sorted(ALL_CITIES))
         profession = st.selectbox("Profession", ["Student", "Civil Engineer", "Teacher", "Doctor", "Other"])
-        degree_level = st.selectbox("Degree Level", DEGREE_LEVELS)
-        cgpa = st.number_input("CGPA", min_value=0.0, max_value=10.0, value=7.5, step=0.01)
         sleep_duration = st.selectbox(
             "Sleep Duration",
             ["'Less than 5 hours'", "'5-6 hours'", "'7-8 hours'", "'More than 8 hours'"],
         )
         dietary_habits = st.selectbox("Dietary Habits", ["Healthy", "Moderate", "Unhealthy"])
+        suicidal_thoughts = st.selectbox("Have you ever had suicidal thoughts ?", ["No", "Yes"])
 
     with col2:
         academic_pressure = st.slider("Academic Pressure (0-5)", 0, 5, 3)
-        work_pressure = st.slider("Work Pressure (0-5)", 0, 5, 0)
         study_satisfaction = st.slider("Study Satisfaction (0-5)", 0, 5, 3)
-        job_satisfaction = st.slider("Job Satisfaction (0-5)", 0, 5, 0)
         work_study_hours = st.number_input("Work/Study Hours per hari", min_value=0, max_value=24, value=6)
         financial_stress = st.slider("Financial Stress (1-5)", 1, 5, 3)
-        suicidal_thoughts = st.selectbox("Have you ever had suicidal thoughts ?", ["No", "Yes"])
-        family_history = st.selectbox("Family History of Mental Illness", ["No", "Yes"])
 
     submitted = st.form_submit_button("Prediksi")
 
 if submitted:
     raw_input = {
-        'Gender': gender,
+        # ── 9 input yang benar-benar dipakai model ──
         'Age': age,
-        'City': city,
         'Profession': profession,
-        'Degree_Level': degree_level,
-        'CGPA': cgpa,
         'Sleep Duration': sleep_duration,
         'Dietary Habits': dietary_habits,
         'Academic Pressure': academic_pressure,
-        'Work Pressure': work_pressure,
         'Study Satisfaction': study_satisfaction,
-        'Job Satisfaction': job_satisfaction,
         'Work/Study Hours': work_study_hours,
         'Financial Stress': financial_stress,
         'Have you ever had suicidal thoughts ?': suicidal_thoughts,
-        'Family History of Mental Illness': family_history,
+        # ── kolom tidak terpakai, diisi default supaya scaler/ohe tidak error ──
+        **DEFAULTS_UNUSED,
     }
 
     X_input = preprocess_input(raw_input)
