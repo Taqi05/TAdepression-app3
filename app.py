@@ -1,198 +1,182 @@
+"""Aplikasi skrining awal risiko depresi mahasiswa (LightGBM + LIME).
+
+Model: LightGBM dengan 10 fitur terpilih, dilatih dengan SMOTE pada data latih.
+Aplikasi ini adalah alat bantu skrining awal, bukan alat diagnosis.
 """
-Deteksi Risiko Depresi Mahasiswa — Streamlit App (versi disederhanakan)
-========================================================================
-Versi ini HANYA menampilkan input yang benar-benar dipakai oleh model
-(10 fitur hasil feature selection -> berasal dari 9 kolom mentah).
+import json
+from pathlib import Path
 
-Kolom mentah yang TIDAK memengaruhi prediksi (Gender, City, Degree Level,
-CGPA, Work Pressure, Job Satisfaction, Family History of Mental Illness)
-tetap diisi otomatis dengan nilai default di belakang layar, semata-mata
-supaya scaler.transform() / ohe.transform() tidak error (keduanya di-fit
-pada notebook dengan seluruh kolom mentah, sebelum feature selection).
-Nilai default itu TIDAK berpengaruh ke hasil prediksi karena akan dibuang
-saat kita ambil hanya `selected_features` di akhir preprocessing.
-
-File pendukung yang WAJIB ada di folder yang sama (hasil dari notebook):
-- best_model.pkl          -> model terbaik (hasil GridSearchCV)
-- scaler.pkl               -> StandardScaler (fit di X_train)
-- ohe.pkl                  -> OneHotEncoder (fit di X_train)
-- ordinal_encoder.pkl      -> OrdinalEncoder untuk Degree_Level
-- selected_features.pkl    -> daftar 10 fitur hasil feature selection
-- lime_training_data.pkl   -> X_train_sel_sm (dipakai rekonstruksi LIME explainer)
-"""
-
-import streamlit as st
-import pandas as pd
-import numpy as np
 import joblib
-import lime.lime_tabular
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
+from lime.lime_tabular import LimeTabularExplainer
 
-st.set_page_config(page_title="Deteksi Risiko Depresi Mahasiswa", page_icon="🧠", layout="centered")
+BASE = Path(__file__).parent
+LIME_SEED = 42
+LIME_NUM_SAMPLES = 5000
 
-# ── Kolom yang dibutuhkan scaler & ohe (HARUS sama persis dengan notebook) ───
-OHE_COLS = [
-    'Gender',
-    'City_Tier',
-    'Dietary Habits',
-    'Sleep Duration',
-    'Have you ever had suicidal thoughts ?',
-    'Family History of Mental Illness',
-    'Profession',
-]
+st.set_page_config(page_title="Skrining Awal Risiko Depresi Mahasiswa", page_icon="🧠", layout="centered")
 
-NUM_COLS_SCALE = [
-    'Age', 'CGPA', 'Work Pressure', 'Academic Pressure',
-    'Study Satisfaction', 'Job Satisfaction',
-    'Work/Study Hours', 'Financial Stress', 'Degree_Level',
-]
-
-DEGREE_LEVELS = ['High School', 'Bachelor', 'Master', 'Doctorate', 'Other']
-
-# Nilai default untuk kolom yang TIDAK dipakai model (tidak ada di selected_features).
-# Boleh diganti bebas, tidak akan mengubah hasil prediksi.
-DEFAULTS_UNUSED = {
-    'Gender': 'Male',
-    'City_Tier': 'Tier 1',   # hasil map dari City, di sini langsung set tier-nya
-    'Degree_Level': 'Bachelor',
-    'CGPA': 7.5,
-    'Work Pressure': 0,
-    'Job Satisfaction': 0,
-    'Family History of Mental Illness': 'No',
+# Nama fitur model -> label yang mudah dibaca pada hasil LIME
+LABELS = {
+    "Have you ever had suicidal thoughts ?_Yes": "Pernah berpikir untuk bunuh diri",
+    "Academic Pressure": "Tekanan akademik",
+    "Dietary Habits_Unhealthy": "Pola makan tidak sehat",
+    "Dietary Habits_Moderate": "Pola makan sedang",
+    "Financial Stress": "Tekanan finansial",
+    "Age": "Usia",
+    "Work/Study Hours": "Jam belajar/kerja per hari",
+    "Study Satisfaction": "Kepuasan belajar",
+    "Sleep Duration_Less than 5 hours": "Tidur kurang dari 5 jam",
+    "Sleep Duration_More than 8 hours": "Tidur lebih dari 8 jam",
 }
 
 
-# ── Load model & artefak (di-cache biar cuma load sekali) ────────────────────
-@st.cache_resource
+@st.cache_resource(show_spinner="Memuat model...")
 def load_artifacts():
-    model = joblib.load('best_model.pkl')
-    scaler = joblib.load('scaler.pkl')
-    ohe = joblib.load('ohe.pkl')
-    ordinal_encoder = joblib.load('ordinal_encoder.pkl')
-    selected_features = list(joblib.load('selected_features.pkl'))
-    return model, scaler, ohe, ordinal_encoder, selected_features
+    model = joblib.load(BASE / "best_model.pkl")
+    x_raw = np.asarray(joblib.load(BASE / "lime_training_data_raw.pkl"), dtype=float)
+    meta = json.loads((BASE / "lime_meta.json").read_text(encoding="utf-8"))
+    return model, x_raw, meta
 
 
-@st.cache_resource
-def load_lime_explainer(_selected_features):
-    # _selected_features diberi underscore biar Streamlit gak coba hash list-nya
-    training_data = joblib.load('lime_training_data.pkl')
-    explainer = lime.lime_tabular.LimeTabularExplainer(
-        training_data=np.array(training_data),
-        feature_names=list(_selected_features),
-        class_names=['Tidak Depresi', 'Depresi'],
-        mode='classification',
+def to_model_space(a_raw, sel, mean, scale):
+    """Satuan asli -> ruang model (fitur numerik distandardisasi seperti saat pelatihan)."""
+    a = np.array(a_raw, dtype=float).copy()
+    for j, f in enumerate(sel):
+        if f in mean:
+            a[:, j] = (a[:, j] - mean[f]) / scale[f]
+    return a
+
+
+def build_row(values, sel):
+    """Susun satu baris fitur (satuan asli) mengikuti urutan fitur terpilih."""
+    raw = {
+        "Have you ever had suicidal thoughts ?_Yes": 1.0 if values["suicidal"] == "Ya" else 0.0,
+        "Academic Pressure": float(values["academic"]),
+        "Dietary Habits_Unhealthy": 1.0 if values["diet"] == "Tidak sehat" else 0.0,
+        "Dietary Habits_Moderate": 1.0 if values["diet"] == "Sedang" else 0.0,
+        "Financial Stress": float(values["financial"]),
+        "Age": float(values["age"]),
+        "Work/Study Hours": float(values["hours"]),
+        "Study Satisfaction": float(values["satisfaction"]),
+        "Sleep Duration_Less than 5 hours": 1.0 if values["sleep"] == "Kurang dari 5 jam" else 0.0,
+        "Sleep Duration_More than 8 hours": 1.0 if values["sleep"] == "Lebih dari 8 jam" else 0.0,
+    }
+    return np.array([[raw[f] for f in sel]], dtype=float)
+
+
+def explain(model, x_raw, meta, row_raw):
+    sel, mean, scale = meta["selected_features"], meta["numeric_mean"], meta["numeric_scale"]
+    cat_idx = meta["categorical_features_idx"]
+
+    def predict_fn(a_raw):
+        xm = pd.DataFrame(to_model_space(a_raw, sel, mean, scale), columns=sel)
+        return model.predict_proba(xm)
+
+    explainer = LimeTabularExplainer(
+        training_data=x_raw,
+        feature_names=sel,
+        class_names=["Tidak depresi", "Depresi"],
+        categorical_features=cat_idx,
+        categorical_names={j: ["0", "1"] for j in cat_idx},
+        mode="classification",
         discretize_continuous=True,
-        random_state=42,
+        random_state=LIME_SEED,
     )
-    return explainer
+    exp = explainer.explain_instance(
+        row_raw[0], predict_fn, num_features=len(sel), num_samples=LIME_NUM_SAMPLES, labels=(1,)
+    )
+    score = exp.score[1] if isinstance(exp.score, dict) else exp.score
+    return exp.as_list(label=1), float(score)
 
 
-model, scaler, ohe, ordinal_encoder, selected_features = load_artifacts()
-explainer = load_lime_explainer(selected_features)
+def pretty_rule(rule):
+    for k, v in sorted(LABELS.items(), key=lambda kv: -len(kv[0])):
+        rule = rule.replace(k, v)
+    return rule.replace("=1", " = Ya").replace("=0", " = Tidak")
 
 
-def predict_fn(x):
-    return model.predict_proba(x)
+# ----------------------------------------------------------------------------- UI
+st.title("🧠 Skrining Awal Risiko Depresi Mahasiswa")
+st.warning(
+    "Aplikasi ini hanya alat bantu **skrining awal** dan **bukan diagnosis**. "
+    "Hasilnya tidak menggantikan penilaian psikolog atau tenaga kesehatan profesional. "
+    "Jika Anda atau seseorang yang Anda kenal sedang berada dalam kondisi darurat atau berpikir untuk menyakiti diri, "
+    "segera hubungi tenaga kesehatan atau layanan darurat setempat."
+)
 
+try:
+    model, x_raw, meta = load_artifacts()
+except FileNotFoundError as e:
+    st.error(f"Berkas model tidak ditemukan: {e.filename}. Pastikan best_model.pkl, lime_training_data_raw.pkl, dan lime_meta.json berada satu folder dengan app.py.")
+    st.stop()
 
-# ── Preprocessing 1 baris input user, urutan HARUS sama kayak notebook ───────
-def preprocess_input(raw: dict) -> pd.DataFrame:
-    df = pd.DataFrame([raw])
+sel = meta["selected_features"]
 
-    # 1. Ordinal encode Degree_Level
-    df['Degree_Level'] = ordinal_encoder.transform(df[['Degree_Level']])
+with st.sidebar:
+    st.header("Pengaturan")
+    threshold = st.slider("Ambang keputusan", 0.20, 0.80, 0.50, 0.05,
+                          help="Probabilitas minimum agar hasil dinyatakan 'terindikasi berisiko'. "
+                               "Ambang lebih rendah menangkap lebih banyak kasus tetapi menambah alarm palsu.")
+    show_lime = st.checkbox("Tampilkan penjelasan LIME", value=True)
+    st.caption("Data yang dimasukkan tidak disimpan oleh aplikasi ini.")
 
-    # 2. One-hot encode kolom kategorikal
-    ohe_out = ohe.transform(df[OHE_COLS])
-    ohe_feature_names = ohe.get_feature_names_out(OHE_COLS).tolist()
-    ohe_df = pd.DataFrame(ohe_out, columns=ohe_feature_names, index=df.index)
-
-    df_num = df.drop(columns=OHE_COLS)
-    df_full = pd.concat([df_num, ohe_df], axis=1)
-
-    # 3. Scaling fitur numerik (termasuk Degree_Level yang udah ordinal)
-    cols_to_scale = [c for c in NUM_COLS_SCALE if c in df_full.columns]
-    df_full[cols_to_scale] = scaler.transform(df_full[cols_to_scale])
-
-    # 4. Ambil hanya 10 fitur hasil feature selection, urutan HARUS sama
-    df_selected = df_full[selected_features]
-    return df_selected
-
-
-# ── UI ─────────────────────────────────────────────────────────────────────
-st.title("🧠 Deteksi Risiko Depresi Mahasiswa")
-st.caption("Model machine learning hasil Tugas Akhir — GridSearchCV + SMOTE + Feature Selection + LIME")
-st.info("Form ini hanya menanyakan 9 input yang benar-benar dipakai oleh model (hasil feature selection).")
-
-with st.form("input_form"):
-    col1, col2 = st.columns(2)
-
-    with col1:
-        age = st.number_input("Age", min_value=15, max_value=60, value=21)
-        profession = st.selectbox("Profession", ["Student", "Civil Engineer", "Teacher", "Doctor", "Other"])
-        sleep_duration = st.selectbox(
-            "Sleep Duration",
-            ["'Less than 5 hours'", "'5-6 hours'", "'7-8 hours'", "'More than 8 hours'"],
-        )
-        dietary_habits = st.selectbox("Dietary Habits", ["Healthy", "Moderate", "Unhealthy"])
-        suicidal_thoughts = st.selectbox("Have you ever had suicidal thoughts ?", ["No", "Yes"])
-
-    with col2:
-        academic_pressure = st.slider("Academic Pressure (0-5)", 0, 5, 3)
-        study_satisfaction = st.slider("Study Satisfaction (0-5)", 0, 5, 3)
-        work_study_hours = st.number_input("Work/Study Hours per hari", min_value=0, max_value=24, value=6)
-        financial_stress = st.slider("Financial Stress (1-5)", 1, 5, 3)
-
-    submitted = st.form_submit_button("Prediksi")
+with st.form("form_skrining"):
+    st.subheader("Data mahasiswa")
+    c1, c2 = st.columns(2)
+    with c1:
+        suicidal = st.radio("Pernah berpikir untuk bunuh diri?", ["Tidak", "Ya"], horizontal=True)
+        academic = st.slider("Tekanan akademik (0 = tidak ada, 5 = sangat tinggi)", 0, 5, 3)
+        financial = st.slider("Tekanan finansial (1 = rendah, 5 = sangat tinggi)", 1, 5, 3)
+        satisfaction = st.slider("Kepuasan belajar (0 = tidak puas, 5 = sangat puas)", 0, 5, 3)
+    with c2:
+        age = st.number_input("Usia (tahun)", min_value=17, max_value=60, value=22, step=1)
+        hours = st.slider("Jam belajar/kerja per hari", 0, 12, 6)
+        diet = st.selectbox("Pola makan", ["Sehat", "Sedang", "Tidak sehat"])
+        sleep = st.selectbox("Durasi tidur per hari", ["Kurang dari 5 jam", "5-6 jam", "7-8 jam", "Lebih dari 8 jam"], index=2)
+    submitted = st.form_submit_button("Lihat hasil skrining", type="primary")
 
 if submitted:
-    raw_input = {
-        # ── 9 input yang benar-benar dipakai model ──
-        'Age': age,
-        'Profession': profession,
-        'Sleep Duration': sleep_duration,
-        'Dietary Habits': dietary_habits,
-        'Academic Pressure': academic_pressure,
-        'Study Satisfaction': study_satisfaction,
-        'Work/Study Hours': work_study_hours,
-        'Financial Stress': financial_stress,
-        'Have you ever had suicidal thoughts ?': suicidal_thoughts,
-        # ── kolom tidak terpakai, diisi default supaya scaler/ohe tidak error ──
-        **DEFAULTS_UNUSED,
-    }
+    values = dict(suicidal=suicidal, academic=academic, financial=financial, satisfaction=satisfaction,
+                  age=age, hours=hours, diet=diet, sleep=sleep)
+    row_raw = build_row(values, sel)
+    xm = pd.DataFrame(to_model_space(row_raw, sel, meta["numeric_mean"], meta["numeric_scale"]), columns=sel)
+    prob = float(model.predict_proba(xm)[0, 1])
 
-    X_input = preprocess_input(raw_input)
-    proba = predict_fn(X_input.values)[0]
-    pred = int(proba[1] > 0.5)
-
-    if pred == 1:
-        st.error(f"⚠️ Prediksi: **Berisiko Depresi** (probabilitas {proba[1]*100:.1f}%)")
+    st.subheader("Hasil")
+    st.metric("Probabilitas depresi menurut model", f"{prob:.1%}")
+    st.progress(min(max(prob, 0.0), 1.0))
+    if prob >= threshold:
+        st.error(f"Terindikasi berisiko pada ambang {threshold:.2f}. Disarankan penilaian lanjutan oleh konselor atau tenaga profesional.")
     else:
-        st.success(f"✅ Prediksi: **Tidak Berisiko Depresi** (probabilitas {proba[1]*100:.1f}%)")
+        st.success(f"Tidak terindikasi berisiko pada ambang {threshold:.2f}. Hasil ini bukan jaminan; "
+                   "jika ada keluhan, tetap konsultasikan dengan konselor atau tenaga profesional.")
 
-    st.progress(float(proba[1]))
+    if show_lime:
+        with st.spinner("Menghitung penjelasan LIME..."):
+            items, r2 = explain(model, x_raw, meta, row_raw)
+        st.subheader("Faktor yang memengaruhi prediksi ini (LIME)")
+        names = [pretty_rule(r) for r, _ in items][::-1]
+        weights = [w for _, w in items][::-1]
+        fig, ax = plt.subplots(figsize=(7, 4.2))
+        ax.barh(names, weights, color=["#d9534f" if w > 0 else "#4a7fb5" for w in weights])
+        ax.axvline(0, color="black", lw=0.8)
+        ax.set_xlabel("Kontribusi terhadap probabilitas depresi (kanan = mendorong ke depresi)")
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+        st.caption(
+            f"Kecocokan model linear lokal LIME (R²) untuk kasus ini: {r2:.2f}. Nilai rendah berarti penjelasan perlu dibaca sebagai "
+            "indikasi, bukan sebab-akibat."
+        )
 
-    st.caption(
-        "Catatan: ini adalah output model machine learning untuk keperluan akademik/Tugas Akhir, "
-        "bukan diagnosis klinis. Jika mengalami tekanan psikologis, disarankan berkonsultasi "
-        "dengan profesional kesehatan mental."
+with st.expander("Tentang model"):
+    st.markdown(
+        "- Model: LightGBM dengan 10 fitur terpilih, dilatih dengan SMOTE hanya pada data latih.\n"
+        "- Data latih: Student Depression Dataset (mahasiswa di India); label bukan hasil diagnosis klinis terdokumentasi.\n"
+        "- Kinerja pada data uji (threshold 0,5): F1-Score 0,871 dan AUC-ROC 0,921.\n"
+        "- Penjelasan LIME bersifat lokal dan acak; gunakan sebagai pendukung, bukan penentu."
     )
-
-    with st.expander("Lihat data yang diproses ke model"):
-        st.table(X_input.T.rename(columns={0: "Nilai"}))
-
-    st.subheader("🔍 Interpretasi Model (LIME)")
-    st.caption("Menunjukkan fitur mana yang paling mendorong / menahan prediksi risiko depresi untuk kasus ini.")
-
-    exp = explainer.explain_instance(
-        data_row=X_input.values[0],
-        predict_fn=predict_fn,
-        num_features=len(selected_features),
-    )
-
-    for feat, weight in exp.as_list():
-        arah = "🔴 Meningkatkan risiko" if weight > 0 else "🟢 Menurunkan risiko"
-        st.write(f"**{feat}** &nbsp; `{weight:+.4f}` &nbsp; {arah}")
-
-    fig = exp.as_pyplot_figure()
-    st.pyplot(fig)

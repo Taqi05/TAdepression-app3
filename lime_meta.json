@@ -1,0 +1,41 @@
+{
+  "selected_features": [
+    "Have you ever had suicidal thoughts ?_Yes",
+    "Academic Pressure",
+    "Dietary Habits_Unhealthy",
+    "Financial Stress",
+    "Age",
+    "Dietary Habits_Moderate",
+    "Work/Study Hours",
+    "Sleep Duration_Less than 5 hours",
+    "Study Satisfaction",
+    "Sleep Duration_More than 8 hours"
+  ],
+  "categorical_features_idx": [
+    0,
+    2,
+    5,
+    7,
+    9
+  ],
+  "numeric_mean": {
+    "Academic Pressure": 3.1403193970931276,
+    "Financial Stress": 3.1369101022788444,
+    "Age": 25.822402655661225,
+    "Work/Study Hours": 7.166876009330702,
+    "Study Satisfaction": 2.940606495603804
+  },
+  "numeric_scale": {
+    "Academic Pressure": 1.3792553344083323,
+    "Financial Stress": 1.4364670454191204,
+    "Age": 4.900965622004625,
+    "Work/Study Hours": 3.7119456272112084,
+    "Study Satisfaction": 1.3604300487225454
+  },
+  "imbalance_strategy": "smote",
+  "drop_features": [
+    "Profession",
+    "Work Pressure",
+    "Job Satisfaction"
+  ]
+}
