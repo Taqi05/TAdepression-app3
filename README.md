@@ -1,46 +1,47 @@
 # Deteksi Risiko Depresi Mahasiswa
 
-Aplikasi Streamlit untuk memprediksi risiko depresi mahasiswa, dibangun dari
-model machine learning hasil Tugas Akhir (GridSearchCV + SMOTE + Feature
-Selection + LIME).
+Aplikasi Streamlit untuk skrining awal risiko depresi mahasiswa, dibangun dari model hasil Tugas Akhir:
+LightGBM dengan 10 fitur terpilih, dioptimasi dengan GridSearchCV, dilatih dengan SMOTE pada data latih,
+dan dilengkapi penjelasan prediksi dengan LIME.
+
+> Aplikasi ini adalah alat bantu skrining awal dan **bukan diagnosis klinis**. Hasilnya tidak menggantikan
+> penilaian psikolog atau tenaga kesehatan profesional.
 
 ## Isi folder
 
 ```
-app.py                     # aplikasi Streamlit
-requirements.txt           # dependency Python
-best_model.pkl              # model terbaik hasil GridSearchCV       (dari notebook)
-scaler.pkl                  # StandardScaler, fit di X_train         (dari notebook)
-ohe.pkl                     # OneHotEncoder, fit di X_train          (dari notebook)
-ordinal_encoder.pkl         # OrdinalEncoder untuk Degree_Level      (dari notebook)
-selected_features.pkl       # daftar 10 fitur hasil feature selection (dari notebook)
-lime_training_data.pkl      # data referensi untuk rekonstruksi LIME  (dari notebook)
+app.py                      # aplikasi Streamlit
+requirements.txt            # dependency Python
+best_model.pkl              # model LightGBM akhir                     (dari notebook)
+lime_training_data_raw.pkl  # data latih asli (satuan asli) untuk LIME (dari notebook)
+lime_meta.json              # daftar 10 fitur, rata-rata dan simpangan baku fitur numerik (dari notebook)
 ```
 
-File-file `.pkl` **tidak dibuat di sini** — semuanya dihasilkan dari notebook
-`TA_GridSearchCV_7MODEL.ipynb` (lihat bagian "SIMPAN MODEL" di notebook).
-Download semua file itu dari Colab lalu taruh sejajar dengan `app.py` sebelum
-menjalankan atau deploy aplikasi ini.
+Berkas `.pkl` dan `.json` tidak dibuat di sini. Semuanya dihasilkan oleh notebook penelitian
+(bagian "Simpan Model & Artefak"). Unduh dari notebook, lalu letakkan sejajar dengan `app.py`.
 
 ## Menjalankan secara lokal
 
-```bash
+```
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
 ## Deploy ke Streamlit Community Cloud
 
-1. Push folder ini (termasuk semua file `.pkl`) ke repo GitHub.
-2. Buka [share.streamlit.io](https://share.streamlit.io), hubungkan ke repo tsb.
-3. Pilih `app.py` sebagai entry point, klik Deploy.
+1. Unggah folder ini (termasuk semua berkas di atas) ke repo GitHub.
+2. Buka [share.streamlit.io](https://share.streamlit.io/) dan hubungkan ke repo ini.
+3. Pilih `app.py` sebagai entry point, lalu klik Deploy.
 
 ## Catatan penting
 
-- Pipeline preprocessing di `app.py` (mapping City → City_Tier, Ordinal
-  encoding Degree_Level, One-Hot Encoding, StandardScaler, lalu seleksi 10
-  fitur) **harus tetap sinkron** dengan pipeline di notebook. Kalau notebook
-  diubah (mis. fitur baru, kategori baru), `app.py` juga harus di-update.
-- Disclaimer di aplikasi ("bukan diagnosis klinis, konsultasikan ke
-  profesional kesehatan mental") sengaja dipertahankan — jangan dihapus,
-  karena output ini murni untuk keperluan akademik/Tugas Akhir.
+- Aplikasi menanyakan 8 hal (pikiran bunuh diri, tekanan akademik, tekanan finansial, kepuasan belajar, usia,
+  jam belajar/kerja, pola makan, durasi tidur) yang dipetakan ke 10 fitur model. Fitur numerik distandardisasi
+  memakai rata-rata dan simpangan baku dari `lime_meta.json`.
+- Jika notebook diubah (misalnya jumlah atau daftar fitur terpilih), fungsi pembentuk fitur di `app.py`
+  harus ikut disesuaikan, dan semua berkas model diunggah ulang bersamaan.
+- Versi `scikit-learn` dan `lightgbm` pada `requirements.txt` sengaja dikunci sama dengan versi saat model dilatih,
+  karena berkas model peka terhadap versi.
+- Model dilatih pada Student Depression Dataset (mahasiswa di India), dan labelnya bukan hasil diagnosis klinis
+  terdokumentasi. Disclaimer di aplikasi sengaja dipertahankan; aplikasi ini untuk keperluan akademik.
+- Aplikasi tidak menyimpan data yang dimasukkan pengguna.
